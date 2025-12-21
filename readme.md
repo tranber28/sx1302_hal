@@ -1,3 +1,80 @@
+🛰️ SX1302/1303 HAL : Passerelle LoRa P2P vers MQTT via Docker
+Ce dépôt propose une solution complète pour transformer une gateway LoRaWAN (chipset SX1302/SX1303) en un récepteur de données LoRa P2P. L'ensemble du système est conteneurisé avec Docker pour un déploiement rapide sur Raspberry Pi.
+
+🌟 Points Forts
+Compatibilité Hybride : Permet à une gateway professionnelle de lire des paquets "Raw LoRa" (P2P).
+
+Architecture Docker : Déploiement simplifié de la Gateway et du broker MQTT.
+
+Optimisé pour Home Assistant : Publication directe sur MQTT avec payload JSON.
+
+Ultra-Low Power : Idéal pour des nœuds capteurs à base d'Atmega328P qui ne peuvent pas supporter une pile LoRaWAN complète.
+
+🏗️ Architecture du Système
+Le projet repose sur deux piliers principaux fonctionnant dans un environnement Docker :
+
+1. Packet Forwarder Modifié (Côté Gateway)
+Le code source en C a été modifié pour supprimer les filtres restrictifs du protocole LoRaWAN (validation MIC et en-têtes stricts).
+
+Rôle : Intercepter tout signal radio sur la fréquence définie et le convertir en message MQTT.
+
+Dockerisation : Le Dockerfile compile les sources du HAL et lance le service en mode privilégié pour accéder au bus SPI du Raspberry Pi.
+
+2. Broker MQTT (Mosquitto)
+Un container Mosquitto agit comme pont central.
+
+Flux : Capteur -> Gateway (Docker) -> Mosquitto (Docker) -> Home Assistant.
+
+Format : Les données brutes reçues par la radio sont encodées en Base64 dans un JSON pour assurer une compatibilité totale avec MQTT.
+
+🚀 Installation Rapide
+Prérequis
+Raspberry Pi avec SPI activé (raspi-config).
+
+Docker et Docker Compose installés.
+
+Déploiement
+Cloner le fork :
+
+Bash
+
+git clone https://github.com/tranber28/sx1302_hal.git
+cd sx1302_hal
+Lancer l'infrastructure :
+
+Bash
+
+docker-compose up -d
+Cela va construire l'image de la gateway et démarrer le broker Mosquitto.
+
+📈 Format des Données & Home Assistant
+Le nœud capteur (Atmega328P) envoie un JSON compact. La gateway l'encapsule ainsi :
+
+Topic MQTT : lora/p2p/rx Payload : ```json { "eui": "E45F01FFFE6D47A6", "data": "eyJpZCI6IjMyOHAiLCJzb2wiOjg2MiwicGt0IjoyfQ==" }
+
+
+**Configuration Home Assistant (`configuration.yaml`) :**
+Pour récupérer l'humidité du sol par exemple :
+```yaml
+mqtt:
+  sensor:
+    - name: "Humidité Sol"
+      state_topic: "lora/p2p/rx"
+      value_template: "{{ (value_json.data | b64decode | from_json).sol }}"
+      unit_of_measurement: "pts"
+📝 Matériel Testé
+Gateway : Raspberry Pi + HAT SX1302/SX1303 (Waveshare / Seeed).
+
+Nœud : Atmega328P + RFM95 (via RadioLib).
+
+Capteurs : Humidité du sol capacitive + AHT10 (Temp/Hum air).
+
+
+
+
+
+
+
 	 / _____)             _              | |
 	( (____  _____ ____ _| |_ _____  ____| |__
 	 \____ \| ___ |    (_   _) ___ |/ ___)  _ \
