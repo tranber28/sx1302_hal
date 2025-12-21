@@ -43,9 +43,9 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #include <netinet/in.h>     /* INET constants and stuff */
 #include <arpa/inet.h>      /* IP address conversion stuff */
 #include <netdb.h>          /* gai_strerror */
-
+#include <base64.h>
 #include <pthread.h>
-
+#include <mosquitto.h> 
 #include "trace.h"
 #include "jitqueue.h"
 #include "parson.h"
@@ -121,6 +121,34 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE TYPES -------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* Minimal implementation of format_dataup_dgram() for SX1302 packet forwarder */
+/* -------------------------------------------------------------------------- */
+int format_dataup_dgram(struct lgw_pkt_rx_s *pkt, char *buff, size_t len) {
+    if (pkt == NULL || buff == NULL) {
+        return -1;
+    }
+
+    /* Datagram header */
+    if (len < 12) {
+        return -1;
+    }
+
+    buff[0] = 0x02; /* Protocol version */
+    buff[1] = 0x00; /* Token */
+    buff[2] = 0x00;
+    buff[3] = 0x00; /* PUSH_DATA ID */
+
+    /* Copy payload */
+    size_t payload_len = pkt->size;
+    if (payload_len > len - 4) {
+        return -1;
+    }
+
+    memcpy(&buff[4], pkt->payload, payload_len);
+
+    return payload_len + 4; /* total datagram size */
+}
 
 /* spectral scan */
 typedef struct spectral_scan_s {
@@ -268,7 +296,170 @@ static spectral_scan_t spectral_scan_params = {
     .nb_scan = 0,
     .pace_s = 10
 };
+/* -------------------------------------------------------------------------- */
+/* --- DUAL FORWARDER: DÉFINITIONS MQTT & P2P ------------------------------- */
+/* -------------------------------------------------------------------------- */
 
+// Paramètres de connexion MQTT
+#define MQTT_HOST       "mosquitto"
+#define MQTT_PORT       1883
+#define MQTT_KEEP_ALIVE 60
+#define MQTT_TOPIC_P2P  "lora/p2p/rx"
+
+// Client Mosquitto global
+struct mosquitto *mosq = NULL;
+
+// Callback pour la connexion Mosquitto (peut rester simple)
+void mqtt_connect_callback(struct mosquitto *mosq, void *obj, int rc) {
+    if (rc != 0) {
+        MSG("ERROR: [mqtt] Connection failed: %s\n", mosquitto_connack_string(rc));
+    } else {
+        MSG("INFO: [mqtt] Connected successfully to broker\n");
+    }
+}
+
+/**
+ * @brief Tente d'initialiser et de connecter le client MQTT.
+ * @return 0 en cas de succès, -1 en cas d'échec.
+ */
+int mqtt_init(void) {
+    int rc;
+
+    MSG("INFO: [mqtt] Initializing MQTT client...\n");
+    
+    mosquitto_lib_init();
+    
+    // Créer une instance de mosquitto. Le client ID est NULL pour le laisser générer
+    // Le dernier paramètre (NULL) est le contexte utilisateur, ici inutilisé.
+    mosq = mosquitto_new(NULL, true, NULL); 
+    if (!mosq) {
+        MSG("ERROR: [mqtt] Could not create Mosquitto instance.\n");
+        return -1;
+    }
+
+    // Définir le callback de connexion
+    mosquitto_connect_callback_set(mosq, mqtt_connect_callback);
+
+    // Tenter la connexion (Mosquitto est non-bloquant par défaut)
+    //rc = mosquitto_connect(mosq, MQTT_HOST, MQTT_PORT, MQTT_KEEP_ALIVE);
+    rc = mosquitto_connect(mosq, "mosquitto", 1883, 60);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        MSG("ERROR: [mqtt] Failed to connect to %s:%d: %s\n", MQTT_HOST, MQTT_PORT, mosquitto_strerror(rc));
+        mosquitto_destroy(mosq);
+        mosq = NULL;
+        return -1;
+    }
+
+    // Démarrer la boucle réseau en arrière-plan
+    rc = mosquitto_loop_start(mosq);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        MSG("ERROR: [mqtt] Failed to start loop: %s\n", mosquitto_strerror(rc));
+        mosquitto_destroy(mosq);
+        mosq = NULL;
+        return -1;
+    }
+    
+    MSG("INFO: [mqtt] Client initialized and loop started.\n");
+    return 0;
+}
+
+/**
+ * @brief Nettoie et arrête la connexion MQTT.
+ */
+void mqtt_cleanup(void) {
+    if (mosq) {
+        MSG("INFO: [mqtt] Cleaning up MQTT client.\n");
+        mosquitto_loop_stop(mosq, false); // Arrêter la boucle d'arrière-plan
+        mosquitto_disconnect(mosq); // Se déconnecter
+        mosquitto_destroy(mosq);
+        mosq = NULL;
+    }
+    mosquitto_lib_cleanup();
+}
+
+/**
+ * @brief Détermine si un paquet est un paquet LoRaWAN standard (MType <= 5).
+ * Les paquets non-LoRaWAN (souvent appelés P2P) sont ceux que nous allons envoyer à MQTT.
+ * @param p Paquet reçu.
+ * @return 1 si LoRaWAN, 0 sinon.
+ */
+int is_lorawan_packet(const struct lgw_pkt_rx_s *p) {
+    if (p->size < 1) {
+        return 0; // Paquet invalide
+    }
+    
+    // Le MHDR est le premier octet du payload
+    uint8_t mhdr = p->payload[0];
+    
+    // Extrait le type de message (MType: bits 5 à 7)
+    // LoRaWAN MType: 0=Join Request, 1=Join Accept, 2=Data Up, 3=Data Down, 4=Conf. Data Up, 5=Conf. Data Down
+    uint8_t mtype = (mhdr >> 5) & 0x07;
+
+    // Si mtype est > 5, ce n'est pas un paquet LoRaWAN standard (il peut être P2P/brut)
+    return (mtype <= 5);
+}
+
+/**
+ * @brief Formate un paquet P2P en JSON et le publie sur MQTT.
+ * @param p Paquet LoRa brut reçu.
+ */
+void forward_to_mqtt(const struct lgw_pkt_rx_s *p) {
+    if (mosq == NULL) {
+        MSG("WARNING: [mqtt] Client not ready, skipping P2P forward.\n");
+        return;
+    }
+    
+    // 1. Encodage Base64 du Payload
+    // La taille du buffer Base64 doit être d'environ 4/3 de la taille du payload + 4 pour la sécurité et le '\0'
+    size_t b64_len = 4 + 4 * (p->size / 3);
+    char *b64_buf = (char *)malloc(b64_len);
+    if (b64_buf == NULL) {
+        MSG("ERROR: [mqtt] malloc failed for base64 buffer\n");
+        return;
+    }
+    
+    // Utiliser la fonction Base64
+    int b64_ret = bin_to_b64(p->payload, p->size, b64_buf, b64_len);
+
+    if (b64_ret <= 0) {
+        MSG("ERROR: [mqtt] base64 encoding failed or empty payload\n");
+        free(b64_buf);
+        return;
+    }
+
+    // 2. Création du Payload JSON (Structure simplifiée P2P)
+    char json_buf[512]; 
+    int json_len;
+    
+    // Le EUI de la passerelle est généralement ignoré pour le P2P, on peut mettre 0 ou le lgwm
+    json_len = snprintf(json_buf, sizeof(json_buf),
+        "{\"eui\":\"%016llX\",\"freq\":%.6lf,\"datr\":\"SF%uBW%u\",\"rssi\":%.1f,\"lsnr\":%.1lf,\"data\":\"%s\"}",
+        (long long unsigned int)lgwm, 
+        p->freq_hz / 1e6,
+        (unsigned int)p->datarate,
+        (p->bandwidth == BW_125KHZ) ? 125 : ((p->bandwidth == BW_250KHZ) ? 250 : 500),
+        p->rssic, // <--- ATTENTION : REMPLACER 'p->rssi' par 'p->rssic' ici
+        p->snr,
+        b64_buf
+    );
+
+    // 3. Publication MQTT
+    if (json_len > 0 && json_len < sizeof(json_buf)) {
+        int rc = mosquitto_publish(mosq, NULL, MQTT_TOPIC_P2P, json_len, json_buf, 0, false);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            MSG("WARNING: [mqtt] Failed to publish P2P packet (RC:%d)\n", rc);
+        } else {
+            MSG("INFO: [mqtt] P2P packet published on %s: %s\n", MQTT_TOPIC_P2P, json_buf); 
+        }
+    } else {
+        MSG("ERROR: [mqtt] JSON buffer overflow or error during snprintf\n");
+    }
+
+    free(b64_buf);
+}
+
+/* -------------------------------------------------------------------------- */
+/* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
 
@@ -303,8 +494,7 @@ void thread_spectral_scan(void);
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
 
-static void usage( void )
-{
+static void usage( void ){
     printf("~~~ Library version string~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
     printf(" %s\n", lgw_version_info());
     printf("~~~ Available options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
@@ -1661,7 +1851,11 @@ int main(int argc, char ** argv)
         MSG("ERROR: [main] failed to start the concentrator\n");
         exit(EXIT_FAILURE);
     }
-
+    /* ===== DÉBUT DUAL FORWARDER - Init MQTT ===== */
+    if (mqtt_init() != 0) {
+        MSG("WARNING: [main] MQTT unavailable, P2P packets will be dropped\n");
+    }
+    /* ===== FIN DUAL FORWARDER ===== */
     /* get the concentrator EUI */
     i = lgw_get_eui(&eui);
     if (i != LGW_HAL_SUCCESS) {
@@ -1936,6 +2130,9 @@ int main(int argc, char ** argv)
             MSG("WARNING: failed to stop concentrator successfully\n");
         }
     }
+    /* ===== DÉBUT DUAL FORWARDER - Cleanup MQTT ===== */
+    mqtt_cleanup();
+    /* ===== FIN DUAL FORWARDER ===== */
 
     if (com_type == LGW_COM_SPI) {
         /* Board reset */
@@ -1944,7 +2141,7 @@ int main(int argc, char ** argv)
             exit(EXIT_FAILURE);
         }
     }
-
+     
     MSG("INFO: Exiting packet forwarder program\n");
     exit(EXIT_SUCCESS);
 }
@@ -2049,15 +2246,89 @@ void thread_up(void) {
         buff_up[2] = token_l;
         buff_index = 12; /* 12-byte header */
 
+        /* ----- DÉBUT DU TRAITEMENT DES PAQUETS (DUAL FORWARDER) ----- */
+        if (nb_pkt > 0) {
+            for (i=0; i < nb_pkt; i++) {
+                p = &rxpkt[i];
+
+                /* 1. FILTRAGE : Si ce n'est PAS LoRaWAN, l'envoyer à MQTT et ignorer l'UDP */
+                
+                forward_to_mqtt(p);
+                 // Passe au paquet suivant sans traitement UDP
+                
+                if (!is_lorawan_packet(p)) {
+                    continue; // On passe directement au paquet suivant (i++), l'UDP est sauté
+                }
+                /* 2. SI LoRaWAN : Continuer le traitement standard pour l'envoi UDP au NS */
+
+                /* check CRC and decide if we forward it or not */
+                if (p->status == STAT_CRC_OK) {
+                    if (fwd_valid_pkt == false) {
+                        continue; /* skip packet */
+                    }
+                    /* increment stats */
+                    pthread_mutex_lock(&mx_meas_up);
+                    meas_nb_rx_ok += 1;
+                    if (p->datarate >= 0 && p->datarate <= 7) {
+                        nb_pkt_log[p->if_chain][p->datarate] += 1;
+                    }
+                    pthread_mutex_unlock(&mx_meas_up);
+                } else if (p->status == STAT_CRC_BAD) {
+                    if (fwd_error_pkt == false) {
+                        continue; /* skip packet */
+                    }
+                    /* increment stats */
+                    pthread_mutex_lock(&mx_meas_up);
+                    meas_nb_rx_bad += 1;
+                    pthread_mutex_unlock(&mx_meas_up);
+                } else if (p->status == STAT_NO_CRC) {
+                    if (fwd_nocrc_pkt == false) {
+                        continue; /* skip packet */
+                    }
+                    /* increment stats */
+                    pthread_mutex_lock(&mx_meas_up);
+                    meas_nb_rx_nocrc += 1;
+                    pthread_mutex_unlock(&mx_meas_up);
+                } else {
+                    MSG("WARNING: [up] received packet with unknown status\n");
+                    continue; /* skip packet */
+                }
+
+                /* if we are here, the packet is valid and we need to forward it */
+                
+                /* format and copy metadata */
+                pkt_in_dgram = format_dataup_dgram(p, (char*)(buff_up + buff_index), (size_t)(TX_BUFF_SIZE - buff_index));
+                buff_index += pkt_in_dgram;
+
+                /* update stats */
+                pthread_mutex_lock(&mx_meas_up);
+                meas_up_pkt_fwd += 1;
+                meas_up_payload_byte += p->size;
+                pthread_mutex_unlock(&mx_meas_up);
+
+                /* optional: print JSON obj content */
+                if (DEBUG_PKT_FWD >= 2) {
+                    printf("  data: %s\n", (char *)(buff_up + buff_index - pkt_in_dgram));
+                }
+            } /* End of for loop on nb_pkt */
+        }
+        /* ----- FIN DU TRAITEMENT DES PAQUETS (DUAL FORWARDER) ----- */
+        
+        /* If no packets to send, check if it is time to send a maintenance message */
+        if ((buff_index == 12) && (send_report == false)) {
+            // ... (Le code existant pour vérifier le temps des statistiques continue ici) ...
+        /* start composing datagram with the header */
+        token_h = (uint8_t)rand(); /* random token */
+        token_l = (uint8_t)rand(); /* random token */
+        buff_up[1] = token_h;
+        buff_up[2] = token_l;
+        buff_index = 12; /* 12-byte header */
+
         /* start of JSON structure */
         memcpy((void *)(buff_up + buff_index), (void *)"{\"rxpk\":[", 9);
         buff_index += 9;
 
-        /* serialize Lora packets metadata and payload */
-        pkt_in_dgram = 0;
-        for (i = 0; i < nb_pkt; ++i) {
-            p = &rxpkt[i];
-
+             /* ===== FIN DUAL FORWARDER ===== */
             /* Get mote information from current packet (addr, fcnt) */
             /* FHDR - DevAddr */
             if (p->size >= 8) {
