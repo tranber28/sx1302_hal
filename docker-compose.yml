@@ -1,0 +1,91 @@
+services:
+  # Broker MQTT Mosquitto
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"      # MQTT
+      - "9001:9001"      # WebSockets
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - lora-network
+
+  # Gateway LoRa personnalisée
+  sx1302-gateway-custom:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sx1302_custom
+    restart: unless-stopped
+    
+    # Accès privilégié pour les GPIOs et SPI
+    privileged: true
+    
+    # Accès aux devices
+    devices:
+      - /dev/spidev0.0:/dev/spidev0.0
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiomem:/dev/gpiomem
+      - /dev/mem:/dev/mem
+    
+    # Variables d'environnement
+    environment:
+      - TZ=Europe/Paris
+      - GATEWAY_EUI=E45F01FFFE6D47A6
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_TOPIC=lora/gateway/raw
+      
+    # Volumes - IMPORTANT: Montez votre code source ici !
+    volumes:
+      # ⚠️ MODIFIER CE CHEMIN avec le chemin vers VOTRE code sx1302_hal modifié
+      - ./sx1302_hal-master:/opt/sx1302_hal:rw
+      - ./config/custom:/opt/sx1302_hal/config:rw
+      - ./logs/custom:/opt/sx1302_hal/logs:rw
+      - /sys/class/gpio:/sys/class/gpio:rw
+    
+    # Dépend de Mosquitto
+    depends_on:
+      - mosquitto
+    
+    # Réseau bridge pour communiquer avec Mosquitto
+    networks:
+      - lora-network
+    
+    # Ports UDP pour LoRaWAN (si vous voulez aussi TTN/ChirpStack)
+    ports:
+      - "1700:1700/udp"
+    
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "lora_pkt_fwd"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Client MQTT pour monitoring (optionnel)
+  mqtt-monitor:
+    image: eclipse-mosquitto:latest
+    container_name: mqtt_monitor
+    restart: "no"
+    depends_on:
+      - mosquitto
+    networks:
+      - lora-network
+    command: >
+      mosquitto_sub -h mosquitto -t "lora/#" -v
+    profiles:
+      - monitoring
+
+networks:
+  lora-network:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
