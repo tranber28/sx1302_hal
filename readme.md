@@ -55,7 +55,7 @@ Topic MQTT : lora/p2p/rx Payload : ```json { "eui": "E45F01FFFE6D47A6", "data": 
 
 **Configuration Home Assistant (`configuration.yaml`) :**
 Pour récupérer l'humidité du sol par exemple :
-```yaml
+yaml
 mqtt:
   sensor:
     - name: "Humidité Sol"
