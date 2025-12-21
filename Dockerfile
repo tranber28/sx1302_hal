@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /opt/sx1302_hal
 
 # Copier ton code local dans le container
-COPY ./sx1302_hal-master /opt/sx1302_hal
+COPY ./sx1302_hal /opt/sx1302_hal
 
 RUN sed -i 's/DEBUG_FTIME= 0/DEBUG_FTIME= 0\nCFG_SX1302= 0\nCFG_SX1303= 1/' libloragw/library.cfg
 # Compiler la bibliothèque et les outils
