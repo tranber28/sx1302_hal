@@ -35,7 +35,7 @@ services:
     # Variables d'environnement
     environment:
       - TZ=Europe/Paris
-      - GATEWAY_EUI=000000
+      - GATEWAY_EUI=XXXX
       - MQTT_BROKER=mosquitto
       - MQTT_PORT=1883
       - MQTT_TOPIC=lora/gateway/raw
@@ -43,7 +43,6 @@ services:
     # Volumes - IMPORTANT: Montez votre code source ici !
     volumes:
       # ⚠️ MODIFIER CE CHEMIN avec le chemin vers VOTRE code sx1302_hal modifié
-      - ./sx1302_hal:/opt/sx1302_hal:rw
       - ./config/custom:/opt/sx1302_hal/config:rw
       - ./logs/custom:/opt/sx1302_hal/logs:rw
       - /sys/class/gpio:/sys/class/gpio:rw
@@ -84,8 +83,6 @@ services:
 
 networks:
   lora-network:
-    driver: bridge
+     external: true
+     name: lora-network
 
-volumes:
-  mosquitto_data:
-  mosquitto_log:

@@ -69,7 +69,7 @@
     "chan_FSK":       {"enable": true, "radio": 0, "if":  300000, "bandwidth": 125000, "datarate": 50000}
   },
   "gateway_conf": {
-    "gateway_ID": "",
+    "gateway_ID": "XXXX",
     "server_address": "packet-multiplexer",
     "serv_port_up": 1700,
     "serv_port_down": 1700,
@@ -80,9 +80,9 @@
     "forward_crc_error": true,
     "forward_crc_disabled": true,
     "gps_tty_path": "",
-    "ref_latitude": 42.1,
-    "ref_longitude": 8.73,
-    "ref_altitude": 333,
+    "ref_latitude": 0.0,
+    "ref_longitude": 0.0,
+    "ref_altitude": 0,
     "beacon_period": 0,
     "beacon_freq_hz": 869525000,
     "beacon_datarate": 9,

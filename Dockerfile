@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /opt/sx1302_hal
 
 # Copier ton code local dans le container
-COPY ./sx1302_hal /opt/sx1302_hal
-
+COPY . /opt/sx1302_hal
+RUN chmod +x /opt/sx1302_hal/packet_forwarder/reset_lgw.sh
 RUN sed -i 's/DEBUG_FTIME= 0/DEBUG_FTIME= 0\nCFG_SX1302= 0\nCFG_SX1303= 1/' libloragw/library.cfg
 # Compiler la bibliothèque et les outils
 RUN make clean && make CFG_SX1303=1 CFG_SX1302=0
@@ -45,4 +45,4 @@ VOLUME ["/opt/sx1302_hal/config"]
 WORKDIR /opt/sx1302_hal/packet_forwarder
 
 # Script de démarrage par défaut
-CMD ["./lora_pkt_fwd", "-c", "/opt/sx1302_hal/config/global_conf.json"]
+CMD ["sh", "-c", "./reset_lgw.sh start && ./lora_pkt_fwd -c /opt/sx1302_hal/config/global_conf.json"]
