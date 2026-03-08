@@ -35,7 +35,11 @@ services:
     # Variables d'environnement
     environment:
       - TZ=Europe/Paris
+<<<<<<< HEAD
       - GATEWAY_EUI=XXXX
+=======
+      - GATEWAY_EUI=E45F01FFFE6D47A6
+>>>>>>> 4b91864 (feat: dual forwarder LoRaWAN/P2P + MQTT + fix JSON)
       - MQTT_BROKER=mosquitto
       - MQTT_PORT=1883
       - MQTT_TOPIC=lora/gateway/raw

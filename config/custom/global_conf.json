@@ -69,7 +69,11 @@
     "chan_FSK":       {"enable": true, "radio": 0, "if":  300000, "bandwidth": 125000, "datarate": 50000}
   },
   "gateway_conf": {
+<<<<<<< HEAD
     "gateway_ID": "XXXX",
+=======
+    "gateway_ID": "E45F01FFFE6D47A6",
+>>>>>>> 4b91864 (feat: dual forwarder LoRaWAN/P2P + MQTT + fix JSON)
     "server_address": "packet-multiplexer",
     "serv_port_up": 1700,
     "serv_port_down": 1700,

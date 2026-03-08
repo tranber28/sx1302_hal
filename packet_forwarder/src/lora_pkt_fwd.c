@@ -179,6 +179,7 @@ int format_dataup_dgram(struct lgw_pkt_rx_s *pkt, char *buff, size_t len) {
         case 10: sf_str = "SF10"; break;
         case 11: sf_str = "SF11"; break;
         case 12: sf_str = "SF12"; break;
+<<<<<<< HEAD
     }
     j = snprintf(&buff[buff_index], len - buff_index, ",\"datr\":\"%s\"", sf_str);
     if (j > 0) buff_index += j; else return -1;
@@ -224,6 +225,59 @@ int format_dataup_dgram(struct lgw_pkt_rx_s *pkt, char *buff, size_t len) {
         buff_index += j;
     } else {
         return -1;
+=======
+>>>>>>> 4b91864 (feat: dual forwarder LoRaWAN/P2P + MQTT + fix JSON)
+    }
+    
+    buff[buff_index] = '"';
+    ++buff_index;
+
+<<<<<<< HEAD
+    /* End of packet object */
+    buff[buff_index] = '}';
+    ++buff_index;
+
+=======
+    /* Bandwidth (appended to datr without comma) */
+    const char* bw_str = "BW125";
+    if (pkt->bandwidth == BW_250KHZ) bw_str = "BW250";
+    else if (pkt->bandwidth == BW_500KHZ) bw_str = "BW500";
+    j = snprintf(&buff[buff_index], len - buff_index, ",\"datr\":\"%s%s\"", sf_str, bw_str);
+    if (j > 0) buff_index += j; else return -1;
+    /* Coding rate */
+    const char* cr_str = "4/5";
+    switch (pkt->coderate) {
+        case 1: cr_str = "4/5"; break;
+        case 2: cr_str = "4/6"; break;
+        case 3: cr_str = "4/7"; break;
+        case 4: cr_str = "4/8"; break;
+        default: cr_str = "OFF"; break;
+    }
+    j = snprintf(&buff[buff_index], len - buff_index, ",\"codr\":\"%s\"", cr_str);
+    if (j > 0) buff_index += j; else return -1;
+
+    /* RSSI */
+    j = snprintf(&buff[buff_index], len - buff_index, ",\"rssi\":%.0f", pkt->rssic);
+    if (j > 0) buff_index += j; else return -1;
+
+    /* SNR */
+    j = snprintf(&buff[buff_index], len - buff_index, ",\"lsnr\":%.1f", pkt->snr);
+    if (j > 0) buff_index += j; else return -1;
+
+    /* Size */
+    j = snprintf(&buff[buff_index], len - buff_index, ",\"size\":%u", pkt->size);
+    if (j > 0) buff_index += j; else return -1;
+
+    /* Data (base64) */
+    memcpy(&buff[buff_index], ",\"data\":\"", 9);
+    buff_index += 9;
+    
+    int b64_len = ((pkt->size + 2) / 3) * 4 + 1;
+    j = bin_to_b64(pkt->payload, pkt->size, &buff[buff_index], b64_len);
+    if (j >= 0) {
+        buff_index += j;
+    } else {
+        return -1;
     }
     
     buff[buff_index] = '"';
@@ -233,6 +287,7 @@ int format_dataup_dgram(struct lgw_pkt_rx_s *pkt, char *buff, size_t len) {
     buff[buff_index] = '}';
     ++buff_index;
 
+>>>>>>> 4b91864 (feat: dual forwarder LoRaWAN/P2P + MQTT + fix JSON)
     return buff_index;
 }
 
@@ -2346,10 +2401,11 @@ void thread_up(void) {
 
                 /* 1. FILTRAGE : Si ce n'est PAS LoRaWAN, l'envoyer à MQTT et ignorer l'UDP */
                 
-                forward_to_mqtt(p);
+                //forward_to_mqtt(p);
                  // Passe au paquet suivant sans traitement UDP
                 
                 if (!is_lorawan_packet(p)) {
+                    forward_to_mqtt(p); 
                     continue; // On passe directement au paquet suivant (i++), l'UDP est sauté
                 }
                 /* 2. SI LoRaWAN : Continuer le traitement standard pour l'envoi UDP au NS */
@@ -2416,8 +2472,15 @@ void thread_up(void) {
         if (pkt_in_dgram > 0) {
             buff_up[buff_index] = ']';
             ++buff_index;
+<<<<<<< HEAD
             buff_up[buff_index] = ',';
             ++buff_index;
+=======
+            if (send_report == true) {
+                buff_up[buff_index] = ',';
+                ++buff_index;
+            }
+>>>>>>> 4b91864 (feat: dual forwarder LoRaWAN/P2P + MQTT + fix JSON)
         } else {
             /* No packets - handle empty array case */
             if (send_report == true) {
